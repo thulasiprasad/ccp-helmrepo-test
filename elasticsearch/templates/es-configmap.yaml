@@ -1,0 +1,41 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: elasticsearch-config
+  namespace: monitoring
+data:
+  elasticsearch.yml: |
+    cluster.name: "ccpsearch"
+    network.host: "0.0.0.0"
+    bootstrap.memory_lock: false
+    discovery.zen.ping.unicast.hosts: elasticsearch-logging
+    discovery.zen.fd.ping_timeout: 3s
+    discovery.zen.minimum_master_nodes: 2
+    thread_pool.bulk.queue_size: 500
+    search.remote.connect: false
+    node.master: ${NODE_MASTER}
+    node.data: ${NODE_DATA}
+    node.ingest: ${NODE_INGEST}
+    xpack.security.enabled: true
+    xpack.monitoring.enabled: true
+    xpack.watcher.enabled: true
+    xpack.ml.enabled: false
+    xpack.graph.enabled:  false
+    xpack.monitoring.collection.enabled: true
+    xpack.license.self_generated.type: trial
+    xpack.notification.slack:
+      account:
+        monitoring:
+          url: https://hooks.slack.com/services/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
+          message_defaults:
+            from: Elasticsearch Alert
+            to: alertmanager_test
+            icon: https://mb.anythingabout.net/static/theme/img/wall/og_image.png
+            attachment:
+              fallback: "X-Pack Notification"
+              color: "#36a64f"
+              title: "X-Pack Notification"
+              title_link: "https://www.elastic.co/guide/en/x-pack/current/index.html"
+              text: "One of your watches generated this notification."
+              mrkdwn_in: "pretext, text"
+  ES_JAVA_OPTS: -Xms4500m -Xmx4500m

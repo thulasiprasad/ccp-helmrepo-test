@@ -1,0 +1,280 @@
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: fluentd-config
+  namespace: monitoring
+  labels:
+    addonmanager.kubernetes.io/mode: Reconcile
+data:
+  system.conf: |-
+    <system>
+      root_dir /tmp/fluentd-buffers/
+    </system>
+
+  containers.input.conf: |-
+    # Json Log Example:
+    # {"log":"[info:2016-02-16T16:04:05.930-08:00] Some log text here\n","stream":"stdout","time":"2016-02-17T00:04:05.931087621Z"}
+    # CRI Log Example:
+    # 2016-02-17T00:04:05.931087621Z stdout F [info:2016-02-16T16:04:05.930-08:00] Some log text here
+    #
+    # Kubernetes resources data.
+    <source>
+      @id fluentd-containers.log
+      @type tail
+      path /var/log/containers/*.log
+      pos_file /var/log/es-containers.log.pos
+      tag raw.kubernetes.*
+      read_from_head false
+      <parse>
+         @type multi_format
+         <pattern>
+           format regexp
+           expression /^(?<severity>\wls -l)(?<time>\d{4} [^\s]*)\s+(?<pid>\d+)\s+(?<source>[^ \]]+)\] (?<message>.*)/
+           time_format %Y-%m-%dT%H:%M:%S.%NZ
+         </pattern>
+         <pattern>
+           format json
+           time_key time
+           time_format %Y-%m-%dT%H:%M:%S.%NZ
+         </pattern>
+         <pattern>
+           format regexp
+           expression /^(?<time>.+) (?<stream>stdout|stderr) [^ ]* (?<message>.*)$/
+           time_format %Y-%m-%dT%H:%M:%S.%N%:z
+         </pattern>
+      </parse>
+    </source>
+
+
+    # Detect exceptions in the log output and forward them as one log entry.
+    <match raw.kubernetes.**>
+      @id raw.kubernetes
+      @type detect_exceptions
+      remove_tag_prefix raw
+      message log
+      stream stream
+      multiline_flush_interval 5
+      max_bytes 500000
+      max_lines 1000
+    </match>
+
+  system.input.conf: |-
+
+    #Syslog Type format
+    #
+    #
+    # Example:
+    # Dec 21 23:17:22 gke-foo-1-1-4b5cbd14-node-4eoj startupscript: Finished running startup script /var/run/google.startup.script
+    #
+    #
+    # TODO Log not present in any machine, confirm then remove in later commit
+    <source>
+      @id startupscript.log
+      @type tail
+      format syslog
+      path /var/log/startupscript.log
+      pos_file /posfiles/es-startupscript.log.pos
+      tag system.startupscript
+    </source>
+
+    #
+    # Authentication logs.
+    #
+    <source>
+      @id auth.log
+      @type tail
+      format syslog
+      path /var/log/auth.log
+      pos_file /posfiles/auth.log.pos
+      tag system.auth
+    </source>
+
+    #
+    # Dpkg logs.
+    #
+    <source>
+      @id dpkg.log
+      @type tail
+      format syslog
+      path /var/log/dpkg.log
+      pos_file /posfiles/dpkg.log.pos
+      tag system.dpkg
+    </source>
+
+    #
+    # Alternatives logs.
+    #
+    <source>
+      @id alternatives.log
+      @type tail
+      format syslog
+      path /var/log/alternatives.log
+      pos_file /posfiles/alternatives.log.pos
+      tag system.alt
+    </source>
+
+    #
+    # Kern logs.
+    # These logs shouldnt be necessary as we are reading kernel logs from journald transport stream
+    # TODO - confirm
+    # <source>
+    #   @id kern.log
+    #   @type tail
+    #   format syslog
+    #   path /var/log/kern.log
+    #   pos_file /posfiles/kern.log.pos
+    #   tag system.kern
+    # </source>
+
+    <source>
+      @id journald-container-runtime
+      @type systemd
+      matches [{ "_SYSTEMD_UNIT": "{{ container_runtime }}.service" }]
+      <storage>
+        @type local
+        persistent true
+      </storage>
+      read_from_head false
+      tag system.container-runtime
+    </source>
+
+    <source>
+      @id journald-kubelet
+      @type systemd
+      matches [{ "_SYSTEMD_UNIT": "kubelet.service" }]
+      <storage>
+        @type local
+        persistent true
+      </storage>
+      read_from_head false
+      tag system.kubelet
+    </source>
+
+    <source>
+      @id journald-node-problem-detector
+      @type systemd
+      matches [{ "_SYSTEMD_UNIT": "node-problem-detector.service" }]
+      <storage>
+        @type local
+        persistent true
+      </storage>
+      read_from_head false
+      tag kubernetes.node-problem-detector
+    </source>
+
+    <source>
+      @id kernel
+      @type systemd
+      matches [{ "_TRANSPORT": "kernel" }]
+      <storage>
+        @type local
+        persistent true
+      </storage>
+      <entry>
+        fields_strip_underscores true
+        fields_lowercase true
+      </entry>
+      read_from_head false
+      tag system.kernel
+    </source>
+
+  forward.input.conf: |-
+    # Takes the messages sent over TCP
+    <source>
+      @type forward
+    </source>
+
+  monitoring.conf: |-
+    # Prometheus Exporter Plugin
+    # input plugin that exports metrics
+    <source>
+      @type prometheus
+    </source>
+
+    <source>
+      @type monitor_agent
+    </source>
+
+    # input plugin that collects metrics from MonitorAgent
+    <source>
+      @type prometheus_monitor
+      <labels>
+        host ${hostname}
+      </labels>
+    </source>
+
+    # input plugin that collects metrics for output plugin
+    <source>
+      @type prometheus_output_monitor
+      <labels>
+        host ${hostname}
+      </labels>
+    </source>
+
+    # input plugin that collects metrics for in_tail plugin
+    <source>
+      @type prometheus_tail_monitor
+      <labels>
+        host ${hostname}
+      </labels>
+    </source>
+
+  output.conf: |-
+    # Enriches records with Kubernetes metadata
+    <filter kubernetes.**>
+      @type kubernetes_metadata
+    </filter>
+
+    <match kubernetes.**>
+      @id elasticsearch-kubernetes
+      @type elasticsearch_dynamic
+      @log_level info
+      include_tag_key true
+      host elasticsearch-logging
+      port 9200
+      logstash_format true
+      logstash_prefix kubernetes-${record['kubernetes']['namespace_name']}
+      logstash_dateformat %Y%m%d
+      user "#{ENV['ELASTIC_USERNAME']}"
+      password "#{ENV['ELASTIC_PASSWORD']}"
+      <buffer>
+        @type file
+        path /buffers/kubernetes.buffer
+        flush_mode interval
+        retry_type exponential_backoff
+        flush_thread_count 2
+        flush_interval 5s
+        retry_forever
+        retry_max_interval 30
+        chunk_limit_size 2M
+        queue_limit_length 8
+        overflow_action block
+      </buffer>
+    </match>
+
+    <match system.**>
+      @id elasticsearch-system
+      @type elasticsearch
+      @log_level info
+      include_tag_key true
+      host elasticsearch-logging
+      port 9200
+      logstash_format true
+      logstash_prefix system
+      logstash_dateformat %Y%m%d
+      user "#{ENV['ELASTIC_USERNAME']}"
+      password "#{ENV['ELASTIC_PASSWORD']}"
+      <buffer>
+        @type file
+        path /buffers/system.buffer
+        flush_mode interval
+        retry_type exponential_backoff
+        flush_thread_count 2
+        flush_interval 5s
+        retry_forever
+        retry_max_interval 30
+        chunk_limit_size 2M
+        queue_limit_length 8
+        overflow_action block
+      </buffer>
+    </match>
